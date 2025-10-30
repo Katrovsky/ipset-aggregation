@@ -2,6 +2,10 @@ import requests
 import ipaddress
 import re
 
+def aggregate_cidrs(ip_list):
+    networks = [ipaddress.ip_network(ip, strict=False) for ip in ip_list]
+    return [str(net) for net in ipaddress.collapse_addresses(networks)]
+
 def get_cloudflare():
     ips = []
     for url in ["https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"]:
@@ -86,9 +90,12 @@ for name, func in providers.items():
     except Exception as e:
         print(f"Error {name}: {e}")
 
+ipv4_aggregated = aggregate_cidrs(ipv4)
+ipv6_aggregated = aggregate_cidrs(ipv6)
+
 with open('ipset-all-ipv4.txt', 'w') as f:
-    f.write('\n'.join(sorted(ipv4)))
+    f.write('\n'.join(sorted(ipv4_aggregated)))
 with open('ipset-all-ipv6.txt', 'w') as f:
-    f.write('\n'.join(sorted(ipv6)))
+    f.write('\n'.join(sorted(ipv6_aggregated)))
 with open('ipset-all.txt', 'w') as f:
-    f.write('\n'.join(sorted(ipv4 + ipv6)))
+    f.write('\n'.join(sorted(ipv4_aggregated + ipv6_aggregated)))
