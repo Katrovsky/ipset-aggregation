@@ -2,7 +2,7 @@ name: Aggregate IPs
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0,12 * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,7 +43,7 @@ jobs:
             if [ -f "$f" ]; then
               lines=$(wc -l < "$f")
               size=$(du -h "$f" | cut -f1)
-              echo "Lines: $lines | Size: $size"
+              echo "$f -> Lines: $lines | Size: $size"
             fi
           done
 
@@ -53,7 +55,8 @@ jobs:
           if ! git diff --staged --quiet; then
             git commit -m "IP update $(date +'%Y-%m-%d %H:%M:%S')"
             git push
-            echo "Changes pushed."
+            echo "Changes pushed successfully."
+            git log -1 --stat
           else
             echo "No changes to commit."
           fi
