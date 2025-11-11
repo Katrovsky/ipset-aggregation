@@ -17,28 +17,32 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('aggregate_ips.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade requests
-        continue-on-error: false
 
       - name: Run aggregation script
         run: |
-          echo "Starting IP aggregation"
           python aggregate_ips.py
-          echo "Script completed"
-        continue-on-error: false
 
       - name: Show generated file stats
         run: |
           for f in ipset-*.txt; do
-            echo "--- $f ---"
-            lines=$(wc -l < "$f")
-            size=$(du -h "$f" | cut -f1)
-            echo "Lines: $lines | Size: $size"
+            if [ -f "$f" ]; then
+              lines=$(wc -l < "$f")
+              size=$(du -h "$f" | cut -f1)
+              echo "Lines: $lines | Size: $size"
+            fi
           done
 
       - name: Commit and push if changes detected
