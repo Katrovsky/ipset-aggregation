@@ -39,6 +39,7 @@ asn_providers = {
     'akamai': 20940,
     'digitalocean': 14061,
     'datacamp': 60068,
+    'cdn77': 60068,
     'contabo': 51167,
     'ovh': 16276,
     'constant': 20473,
