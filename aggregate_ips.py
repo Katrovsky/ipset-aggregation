@@ -12,6 +12,20 @@ def get_prefixes_from_asn(asn):
     data = r.json()
     return [p['prefix'] for p in data.get('data', {}).get('prefixes', [])]
 
+def get_oracle():
+    r = requests.get("https://docs.oracle.com/iaas/tools/public_ip_ranges.json", timeout=30)
+    data = r.json()
+    ips = []
+    for region in data['regions']:
+        for cidr in region['cidrs']:
+            ips.append(cidr['cidr'])
+    return ips
+
+def get_aws():
+    r = requests.get("https://ip-ranges.amazonaws.com/ip-ranges.json", timeout=30)
+    data = r.json()
+    return [p['ip_prefix'] for p in data['prefixes']]
+
 def validate_ip(ip_str):
     try:
         ipaddress.ip_network(ip_str, strict=False)
@@ -19,7 +33,7 @@ def validate_ip(ip_str):
     except:
         return False
 
-providers = {
+asn_providers = {
     'scaleway': 12876,
     'hetzner': 24940,
     'akamai': 20940,
@@ -29,8 +43,6 @@ providers = {
     'ovh': 16276,
     'constant': 20473,
     'cloudflare': 13335,
-    'oracle': 31898,
-    'amazon': 16509,
     'google': 15169,
     'fastly': 54113
 }
@@ -38,7 +50,7 @@ providers = {
 ipv4 = []
 ipv6 = []
 
-for name, asn in providers.items():
+for name, asn in asn_providers.items():
     try:
         prefixes = get_prefixes_from_asn(asn)
         print(f"{name}: {len(prefixes)} ranges")
@@ -51,6 +63,32 @@ for name, asn in providers.items():
                 ipv4.append(p)
     except Exception as e:
         print(f"Error {name}: {e}")
+
+try:
+    aws = get_aws()
+    print(f"aws: {len(aws)} ranges")
+    for p in aws:
+        if not validate_ip(p):
+            continue
+        if ':' in p:
+            ipv6.append(p)
+        else:
+            ipv4.append(p)
+except Exception as e:
+    print(f"Error aws: {e}")
+
+try:
+    oracle = get_oracle()
+    print(f"oracle: {len(oracle)} ranges")
+    for p in oracle:
+        if not validate_ip(p):
+            continue
+        if ':' in p:
+            ipv6.append(p)
+        else:
+            ipv4.append(p)
+except Exception as e:
+    print(f"Error oracle: {e}")
 
 print(f"Before aggregation: IPv4: {len(ipv4)}, IPv6: {len(ipv6)}")
 
