@@ -6,7 +6,7 @@ def aggregate_cidrs(ip_list):
     return [str(net) for net in ipaddress.collapse_addresses(networks)]
 
 def get_prefixes_from_asn(asn):
-    url = f"https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}"
+    url = f"https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}&latest=true"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     data = r.json()
