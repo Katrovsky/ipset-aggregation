@@ -1,25 +1,20 @@
 name: Aggregate IPs
-
 on:
   schedule:
     - cron: '0 0,12 * * *'
   workflow_dispatch:
-
 jobs:
   aggregate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -27,132 +22,171 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('aggregate_ips.py') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade requests
-
       - name: Run aggregation script
         run: |
           python aggregate_ips.py
-
       - name: Generate 50-nfqws-ipset config
         run: |
-          IPV4_LIST=$(tr '\n' ' ' < ipset-all-ipv4.txt | sed 's/ $//')
-          IPV6_LIST=$(tr '\n' ' ' < ipset-all-ipv6.txt | sed 's/ $//')
-          IPV4_COUNT=$(wc -l < ipset-all-ipv4.txt || echo 0)
-          IPV6_COUNT=$(wc -l < ipset-all-ipv6.txt || echo 0)
-          TOTAL_COUNT=$((IPV4_COUNT + IPV6_COUNT))
-          IPSET_SIZE=$((TOTAL_COUNT + TOTAL_COUNT / 4))
-          [ "$IPSET_SIZE" -lt 1 ] && IPSET_SIZE=1
-          NEXT_POW2=1024
-          while [ $NEXT_POW2 -lt $IPSET_SIZE ]; do NEXT_POW2=$((NEXT_POW2 * 2)); done
-          IPSET_SIZE=$NEXT_POW2
-          HASHSIZE=$IPSET_SIZE
-          MEM_DATA=$(((TOTAL_COUNT * 35) / 1024))
-          MEM_HASH=$(((HASHSIZE * 8) / 1024))
-
-          cat > 50-nfqws-ipset.tmpl <<'TEMPLATE'
-# nfqws custom script with aggregated IP ranges from cloud providers and CDN networks
-# Auto-generated with __IPV4_COUNT__ IPv4 and __IPV6_COUNT__ IPv6 networks (total: __TOTAL_COUNT__)
-# Memory usage estimate: ~__MEM_DATA__ KB for sets + ~__MEM_HASH__ KB for hash tables
-
-NFQWS_MY1_OPT="${NFQWS_MY1_OPT:---filter-udp=* --dpi-desync=fake --dpi-desync-repeats=6 --dpi-desync-any-protocol --new --filter-tcp=* --dpi-desync=multisplit}"
-NFQWS_MY1_SUBNETS4="${NFQWS_MY1_SUBNETS4:-__IPV4_LIST__}"
-NFQWS_MY1_SUBNETS6="${NFQWS_MY1_SUBNETS6:-__IPV6_LIST__}"
-NFQWS_MY1_PORTS_TCP=${NFQWS_MY1_PORTS_TCP:-$NFQWS_PORTS_TCP}
-NFQWS_MY1_PORTS_UDP=${NFQWS_MY1_PORTS_UDP:-$NFQWS_PORTS_UDP}
-NFQWS_MY1_TCP_PKT_OUT=${NFQWS_MY1_TCP_PKT_OUT:-$NFQWS_TCP_PKT_OUT}
-NFQWS_MY1_UDP_PKT_OUT=${NFQWS_MY1_UDP_PKT_OUT:-$NFQWS_UDP_PKT_OUT}
-NFQWS_MY1_TCP_PKT_IN=${NFQWS_MY1_TCP_PKT_IN:-$NFQWS_TCP_PKT_IN}
-NFQWS_MY1_UDP_PKT_IN=${NFQWS_MY1_UDP_PKT_IN:-$NFQWS_UDP_PKT_IN}
-
-NFQWS_MY1_IPSET_SIZE=${NFQWS_MY1_IPSET_SIZE:-__IPSET_SIZE__}
-NFQWS_MY1_IPSET_OPT="${NFQWS_MY1_IPSET_OPT:-hash:net hashsize __HASHSIZE__ maxelem $NFQWS_MY1_IPSET_SIZE}"
-
-alloc_dnum DNUM_NFQWS_MY1
-alloc_qnum QNUM_NFQWS_MY1
-NFQWS_MY1_NAME4=my1nfqws4
-NFQWS_MY1_NAME6=my1nfqws6
-
-zapret_custom_daemons()
-{
-	local opt="--qnum=$QNUM_NFQWS_MY1 $NFQWS_MY1_OPT"
-	do_nfqws $1 $DNUM_NFQWS_MY1 "$opt"
-}
-
-zapret_custom_firewall()
-{
-	local f4 f6 subnet
-	local NFQWS_MY1_PORTS_TCP=\${NFQWS_MY1_PORTS_TCP:-\$NFQWS_PORTS_TCP}
-	local NFQWS_MY1_PORTS_UDP=\${NFQWS_MY1_PORTS_UDP:-\$NFQWS_PORTS_UDP}
-
-	[ "\$1" = 1 -a "\$DISABLE_IPV4" != 1 ] && {
-		ipset create \$NFQWS_MY1_NAME4 \$NFQWS_MY1_IPSET_OPT family inet 2>/dev/null
-		ipset flush \$NFQWS_MY1_NAME4
-		for subnet in \$NFQWS_MY1_SUBNETS4; do
-			echo add \$NFQWS_MY1_NAME4 \$subnet
-		done | ipset -! restore
-	}
-	[ "\$1" = 1 -a "\$DISABLE_IPV6" != 1 ] && {
-		ipset create \$NFQWS_MY1_NAME6 \$NFQWS_MY1_IPSET_OPT family inet6 2>/dev/null
-		ipset flush \$NFQWS_MY1_NAME6
-		for subnet in \$NFQWS_MY1_SUBNETS6; do
-			echo add \$NFQWS_MY1_NAME6 \$subnet
-		done | ipset -! restore
-	}
-
-	[ -n "\$NFQWS_MY1_PORTS_TCP" ] && {
-		[ -n "\$NFQWS_MY1_TCP_PKT_OUT" -a "\$NFQWS_MY1_TCP_PKT_OUT" != 0 ] && {
-			f4="-p tcp -m multiport --dports \$NFQWS_MY1_PORTS_TCP \$ipt_connbytes 1:\$NFQWS_MY1_TCP_PKT_OUT -m set --match-set"
-			f6="\$f4 \$NFQWS_MY1_NAME6 dst"
-			f4="\$f4 \$NFQWS_MY1_NAME4 dst"
-			fw_nfqws_post \$1 "\$f4" "\$f6" \$QNUM_NFQWS_MY1
-		}
-		[ -n "\$NFQWS_MY1_TCP_PKT_IN" -a "\$NFQWS_MY1_TCP_PKT_IN" != 0 ] && {
-			f4="-p tcp -m multiport --sports \$NFQWS_MY1_PORTS_TCP \$ipt_connbytes 1:\$NFQWS_MY1_TCP_PKT_IN -m set --match-set"
-			f6="\$f4 \$NFQWS_MY1_NAME6 src"
-			f4="\$f4 \$NFQWS_MY1_NAME4 src"
-			fw_nfqws_pre \$1 "\$f4" "\$f6" \$QNUM_NFQWS_MY1
-		}
-	}
-	[ -n "\$NFQWS_MY1_PORTS_UDP" ] && {
-		[ -n "\$NFQWS_MY1_UDP_PKT_OUT" -a "\$NFQWS_MY1_UDP_PKT_OUT" != 0 ] && {
-			f4="-p udp -m multiport --dports \$NFQWS_MY1_PORTS_UDP \$ipt_connbytes 1:\$NFQWS_MY1_UDP_PKT_OUT -m set --match-set"
-			f6="\$f4 \$NFQWS_MY1_NAME6 dst"
-			f4="\$f4 \$NFQWS_MY1_NAME4 dst"
-			fw_nfqws_post \$1 "\$f4" "\$f6" \$QNUM_NFQWS_MY1
-		}
-		[ -n "\$NFQWS_MY1_UDP_PKT_IN" -a "\$NFQWS_MY1_UDP_PKT_IN" != 0 ] && {
-			f4="-p udp -m multiport --sports \$NFQWS_MY1_PORTS_UDP \$ipt_connbytes 1:\$NFQWS_MY1_UDP_PKT_IN -m set --match-set"
-			f6="\$f4 \$NFQWS_MY1_NAME6 src"
-			f4="\$f4 \$NFQWS_MY1_NAME4 src"
-			fw_nfqws_pre \$1 "\$f4" "\$f6" \$QNUM_NFQWS_MY1
-		}
-	}
-
-	[ "\$1" = 1 ] || {
-		ipset destroy \$NFQWS_MY1_NAME4 2>/dev/null
-		ipset destroy \$NFQWS_MY1_NAME6 2>/dev/null
-	}
-}
-TEMPLATE
-
-          sed \
-            -e "s|__IPV4_LIST__|$(printf '%s' "$IPV4_LIST" | sed 's|[&]|\\&|g')|g" \
-            -e "s|__IPV6_LIST__|$(printf '%s' "$IPV6_LIST" | sed 's|[&]|\\&|g')|g" \
-            -e "s|__IPV4_COUNT__|$IPV4_COUNT|g" \
-            -e "s|__IPV6_COUNT__|$IPV6_COUNT|g" \
-            -e "s|__TOTAL_COUNT__|$TOTAL_COUNT|g" \
-            -e "s|__IPSET_SIZE__|$IPSET_SIZE|g" \
-            -e "s|__HASHSIZE__|$HASHSIZE|g" \
-            -e "s|__MEM_DATA__|$MEM_DATA|g" \
-            -e "s|__MEM_HASH__|$MEM_HASH|g" \
-            50-nfqws-ipset.tmpl > 50-nfqws-ipset
-
-          rm -f 50-nfqws-ipset.tmpl
-
+          IPV4_LIST=$(cat ipset-all-ipv4.txt | tr '\n' ' ' | sed 's/ $//')
+          IPV6_LIST=$(cat ipset-all-ipv6.txt | tr '\n' ' ' | sed 's/ $//')
+          
+          cat > 50-nfqws-ipset << 'EOF'
+          # nfqws custom script with aggregated IP ranges from cloud providers and CDN networks
+          
+          # can override in config :
+          NFQWS_MY1_OPT="${NFQWS_MY1_OPT:---filter-udp=* --dpi-desync=fake --dpi-desync-repeats=6 --dpi-desync-any-protocol --new --filter-tcp=* --dpi-desync=multisplit}"
+          NFQWS_MY1_SUBNETS4="${NFQWS_MY1_SUBNETS4:-IPV4_PLACEHOLDER}"
+          NFQWS_MY1_SUBNETS6="${NFQWS_MY1_SUBNETS6:-IPV6_PLACEHOLDER}"
+          NFQWS_MY1_PORTS_TCP=${NFQWS_MY1_PORTS_TCP:-$NFQWS_PORTS_TCP}
+          NFQWS_MY1_PORTS_UDP=${NFQWS_MY1_PORTS_UDP:-$NFQWS_PORTS_UDP}
+          NFQWS_MY1_TCP_PKT_OUT=${NFQWS_MY1_TCP_PKT_OUT:-$NFQWS_TCP_PKT_OUT}
+          NFQWS_MY1_UDP_PKT_OUT=${NFQWS_MY1_UDP_PKT_OUT:-$NFQWS_UDP_PKT_OUT}
+          NFQWS_MY1_TCP_PKT_IN=${NFQWS_MY1_TCP_PKT_IN:-$NFQWS_TCP_PKT_IN}
+          NFQWS_MY1_UDP_PKT_IN=${NFQWS_MY1_UDP_PKT_IN:-$NFQWS_UDP_PKT_IN}
+          
+          NFQWS_MY1_IPSET_SIZE=${NFQWS_MY1_IPSET_SIZE:-8192}
+          NFQWS_MY1_IPSET_OPT="${NFQWS_MY1_IPSET_OPT:-hash:net hashsize 8192 maxelem $NFQWS_MY1_IPSET_SIZE}"
+          
+          alloc_dnum DNUM_NFQWS_MY1
+          alloc_qnum QNUM_NFQWS_MY1
+          NFQWS_MY1_NAME4=my1nfqws4
+          NFQWS_MY1_NAME6=my1nfqws6
+          
+          zapret_custom_daemons()
+          {
+          	# $1 - 1 - run, 0 - stop
+          
+          	local opt="--qnum=$QNUM_NFQWS_MY1 $NFQWS_MY1_OPT"
+          	do_nfqws $1 $DNUM_NFQWS_MY1 "$opt"
+          }
+          
+          zapret_custom_firewall()
+          {
+          	# $1 - 1 - run, 0 - stop
+          
+          	local f4 f6 subnet
+          	local NFQWS_MY1_PORTS_TCP=$(replace_char - : $NFQWS_MY1_PORTS_TCP)
+          	local NFQWS_MY1_PORTS_UDP=$(replace_char - : $NFQWS_MY1_PORTS_UDP)
+          
+          	[ "$1" = 1 -a "$DISABLE_IPV4" != 1 ] && {
+          		ipset create $NFQWS_MY1_NAME4 $NFQWS_MY1_IPSET_OPT family inet 2>/dev/null
+          		ipset flush $NFQWS_MY1_NAME4
+          		for subnet in $NFQWS_MY1_SUBNETS4; do
+          			echo add $NFQWS_MY1_NAME4 $subnet
+          		done | ipset -! restore
+          	}
+          	[ "$1" = 1 -a "$DISABLE_IPV6" != 1 ] && {
+          		ipset create $NFQWS_MY1_NAME6 $NFQWS_MY1_IPSET_OPT family inet6 2>/dev/null
+          		ipset flush $NFQWS_MY1_NAME6
+          		for subnet in $NFQWS_MY1_SUBNETS6; do
+          			echo add $NFQWS_MY1_NAME6 $subnet
+          		done | ipset -! restore
+          	}
+          
+          	[ -n "$NFQWS_MY1_PORTS_TCP" ] && {
+          		[ -n "$NFQWS_MY1_TCP_PKT_OUT" -a "$NFQWS_MY1_TCP_PKT_OUT" != 0 ] && {
+          			f4="-p tcp -m multiport --dports $NFQWS_MY1_PORTS_TCP $ipt_connbytes 1:$NFQWS_MY1_TCP_PKT_OUT -m set --match-set"
+          			f6="$f4 $NFQWS_MY1_NAME6 dst"
+          			f4="$f4 $NFQWS_MY1_NAME4 dst"
+          			fw_nfqws_post $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          		[ -n "$NFQWS_MY1_TCP_PKT_IN" -a "$NFQWS_MY1_TCP_PKT_IN" != 0 ] && {
+          			f4="-p tcp -m multiport --sports $NFQWS_MY1_PORTS_TCP $ipt_connbytes 1:$NFQWS_MY1_TCP_PKT_IN -m set --match-set"
+          			f6="$f4 $NFQWS_MY1_NAME6 src"
+          			f4="$f4 $NFQWS_MY1_NAME4 src"
+          			fw_nfqws_pre $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          	}
+          	[ -n "$NFQWS_MY1_PORTS_UDP" ] && {
+          		[ -n "$NFQWS_MY1_UDP_PKT_OUT" -a "$NFQWS_MY1_UDP_PKT_OUT" != 0 ] && {
+          			f4="-p udp -m multiport --dports $NFQWS_MY1_PORTS_UDP $ipt_connbytes 1:$NFQWS_MY1_UDP_PKT_OUT -m set --match-set"
+          			f6="$f4 $NFQWS_MY1_NAME6 dst"
+          			f4="$f4 $NFQWS_MY1_NAME4 dst"
+          			fw_nfqws_post $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          		[ -n "$NFQWS_MY1_UDP_PKT_IN" -a "$NFQWS_MY1_UDP_PKT_IN" != 0 ] && {
+          			f4="-p udp -m multiport --sports $NFQWS_MY1_PORTS_UDP $ipt_connbytes 1:$NFQWS_MY1_UDP_PKT_IN -m set --match-set"
+          			f6="$f4 $NFQWS_MY1_NAME6 src"
+          			f4="$f4 $NFQWS_MY1_NAME4 src"
+          			fw_nfqws_pre $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          	}
+          
+          	[ "$1" = 1 ] || {
+          		ipset destroy $NFQWS_MY1_NAME4 2>/dev/null
+          		ipset destroy $NFQWS_MY1_NAME6 2>/dev/null
+          	}
+          }
+          
+          zapret_custom_firewall_nft()
+          {
+          	local f4 f6 subnets
+          	local first_packets_only="$nft_connbytes 1-$NFQWS_MY1_PKT_OUT"
+          
+          	[ "$DISABLE_IPV4" != 1 ] && {
+          	        make_comma_list subnets $NFQWS_MY1_SUBNETS4
+          		nft_create_set $NFQWS_MY1_NAME4 "type ipv4_addr; size $NFQWS_MY1_IPSET_SIZE; auto-merge; flags interval;"
+          		nft_flush_set $NFQWS_MY1_NAME4
+          		nft_add_set_element $NFQWS_MY1_NAME4 "$subnets"
+          	}
+          	[ "$DISABLE_IPV6" != 1 ] && {
+          	        make_comma_list subnets $NFQWS_MY1_SUBNETS6
+          		nft_create_set $NFQWS_MY1_NAME6 "type ipv6_addr; size $NFQWS_MY1_IPSET_SIZE; auto-merge; flags interval;"
+          		nft_flush_set $NFQWS_MY1_NAME6
+          		nft_add_set_element $NFQWS_MY1_NAME6 "$subnets"
+          	}
+          
+          	[ -n "$NFQWS_MY1_PORTS_TCP" ] && {
+          		[ -n "$NFQWS_MY1_TCP_PKT_OUT" -a "$NFQWS_MY1_TCP_PKT_OUT" != 0 ] && {
+          			f4="tcp dport {$NFQWS_MY1_PORTS_TCP} $(nft_first_packets $NFQWS_MY1_TCP_PKT_OUT)"
+          			f6="$f4 ip6 daddr @$NFQWS_MY1_NAME6"
+          			f4="$f4 ip daddr @$NFQWS_MY1_NAME4"
+          			nft_fw_nfqws_post $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          		[ -n "$NFQWS_MY1_TCP_PKT_IN" -a "$NFQWS_MY1_TCP_PKT_IN" != 0 ] && {
+          			f4="tcp sport {$NFQWS_MY1_PORTS_TCP} $(nft_first_packets $NFQWS_MY1_TCP_PKT_IN)"
+          			f6="$f4 ip6 saddr @$NFQWS_MY1_NAME6"
+          			f4="$f4 ip saddr @$NFQWS_MY1_NAME4"
+          			nft_fw_nfqws_pre $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          	}
+          	[ -n "$NFQWS_MY1_PORTS_UDP" ] && {
+          		[ -n "$NFQWS_MY1_UDP_PKT_OUT" -a "$NFQWS_MY1_UDP_PKT_OUT" != 0 ] && {
+          			f4="udp dport {$NFQWS_MY1_PORTS_UDP} $(nft_first_packets $NFQWS_MY1_UDP_PKT_OUT)"
+          			f6="$f4 ip6 daddr @$NFQWS_MY1_NAME6"
+          			f4="$f4 ip daddr @$NFQWS_MY1_NAME4"
+          			nft_fw_nfqws_post $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          		[ -n "$NFQWS_MY1_UDP_PKT_IN" -a "$NFQWS_MY1_UDP_PKT_IN" != 0 ] && {
+          			f4="udp sport {$NFQWS_MY1_PORTS_UDP} $(nft_first_packets $NFQWS_MY1_UDP_PKT_IN)"
+          			f6="$f4 ip6 saddr @$NFQWS_MY1_NAME6"
+          			f4="$f4 ip saddr @$NFQWS_MY1_NAME4"
+          			nft_fw_nfqws_pre $1 "$f4" "$f6" $QNUM_NFQWS_MY1
+          		}
+          	}
+          }
+          
+          
+          zapret_custom_firewall_nft_flush()
+          {
+          	# this function is called after all nft fw rules are deleted
+          	# however sets are not deleted. it's desired to clear sets here.
+          
+          	nft_del_set $NFQWS_MY1_NAME4 2>/dev/null
+          	nft_del_set $NFQWS_MY1_NAME6 2>/dev/null
+          }
+          EOF
+          
+          sed -i "s|IPV4_PLACEHOLDER|$IPV4_LIST|g" 50-nfqws-ipset
+          sed -i "s|IPV6_PLACEHOLDER|$IPV6_LIST|g" 50-nfqws-ipset
+          
+          echo "Generated 50-nfqws-ipset with:"
+          echo "  IPv4 networks: $(echo $IPV4_LIST | wc -w)"
+          echo "  IPv6 networks: $(echo $IPV6_LIST | wc -w)"
       - name: Show generated file stats
         run: |
           for f in ipset-*.txt 50-nfqws-ipset; do
@@ -162,7 +196,6 @@ TEMPLATE
               echo "$f -> Lines: $lines | Size: $size"
             fi
           done
-
       - name: Commit and push if changes detected
         run: |
           git config --local user.email "action@github.com"
@@ -171,6 +204,8 @@ TEMPLATE
           if ! git diff --staged --quiet; then
             git commit -m "IP update $(date +'%Y-%m-%d %H:%M:%S')"
             git push
+            echo "Changes pushed successfully."
             git log -1 --stat
+          else
+            echo "No changes to commit."
           fi
-          echo "No changes to commit."
