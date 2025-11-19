@@ -34,22 +34,38 @@ jobs:
           IPV4_LIST=$(cat ipset-all-ipv4.txt | tr '\n' ' ' | sed 's/ $//')
           IPV6_LIST=$(cat ipset-all-ipv6.txt | tr '\n' ' ' | sed 's/ $//')
           
-          cat > 50-nfqws-ipset << 'EOF'
+          IPV4_COUNT=$(cat ipset-all-ipv4.txt | wc -l)
+          IPV6_COUNT=$(cat ipset-all-ipv6.txt | wc -l)
+          TOTAL_COUNT=$((IPV4_COUNT + IPV6_COUNT))
+          
+          IPSET_SIZE=$((TOTAL_COUNT + TOTAL_COUNT / 4))
+          
+          NEXT_POW2=1024
+          while [ $NEXT_POW2 -lt $IPSET_SIZE ]; do
+            NEXT_POW2=$((NEXT_POW2 * 2))
+          done
+          IPSET_SIZE=$NEXT_POW2
+          
+          HASHSIZE=$IPSET_SIZE
+          
+          cat > 50-nfqws-ipset << EOF
           # nfqws custom script with aggregated IP ranges from cloud providers and CDN networks
+          # Auto-generated with $IPV4_COUNT IPv4 and $IPV6_COUNT IPv6 networks (total: $TOTAL_COUNT)
+          # Memory usage estimate: ~$((TOTAL_COUNT * 35 / 1024)) KB for sets + ~$((HASHSIZE * 8 / 1024)) KB for hash tables
           
-          # can override in config :
-          NFQWS_MY1_OPT="${NFQWS_MY1_OPT:---filter-udp=* --dpi-desync=fake --dpi-desync-repeats=6 --dpi-desync-any-protocol --new --filter-tcp=* --dpi-desync=multisplit}"
-          NFQWS_MY1_SUBNETS4="${NFQWS_MY1_SUBNETS4:-IPV4_PLACEHOLDER}"
-          NFQWS_MY1_SUBNETS6="${NFQWS_MY1_SUBNETS6:-IPV6_PLACEHOLDER}"
-          NFQWS_MY1_PORTS_TCP=${NFQWS_MY1_PORTS_TCP:-$NFQWS_PORTS_TCP}
-          NFQWS_MY1_PORTS_UDP=${NFQWS_MY1_PORTS_UDP:-$NFQWS_PORTS_UDP}
-          NFQWS_MY1_TCP_PKT_OUT=${NFQWS_MY1_TCP_PKT_OUT:-$NFQWS_TCP_PKT_OUT}
-          NFQWS_MY1_UDP_PKT_OUT=${NFQWS_MY1_UDP_PKT_OUT:-$NFQWS_UDP_PKT_OUT}
-          NFQWS_MY1_TCP_PKT_IN=${NFQWS_MY1_TCP_PKT_IN:-$NFQWS_TCP_PKT_IN}
-          NFQWS_MY1_UDP_PKT_IN=${NFQWS_MY1_UDP_PKT_IN:-$NFQWS_UDP_PKT_IN}
+          # can override in config:
+          NFQWS_MY1_OPT="\${NFQWS_MY1_OPT:---filter-udp=* --dpi-desync=fake --dpi-desync-repeats=6 --dpi-desync-any-protocol --new --filter-tcp=* --dpi-desync=multisplit}"
+          NFQWS_MY1_SUBNETS4="\${NFQWS_MY1_SUBNETS4:-$IPV4_LIST}"
+          NFQWS_MY1_SUBNETS6="\${NFQWS_MY1_SUBNETS6:-$IPV6_LIST}"
+          NFQWS_MY1_PORTS_TCP=\${NFQWS_MY1_PORTS_TCP:-\$NFQWS_PORTS_TCP}
+          NFQWS_MY1_PORTS_UDP=\${NFQWS_MY1_PORTS_UDP:-\$NFQWS_PORTS_UDP}
+          NFQWS_MY1_TCP_PKT_OUT=\${NFQWS_MY1_TCP_PKT_OUT:-\$NFQWS_TCP_PKT_OUT}
+          NFQWS_MY1_UDP_PKT_OUT=\${NFQWS_MY1_UDP_PKT_OUT:-\$NFQWS_UDP_PKT_OUT}
+          NFQWS_MY1_TCP_PKT_IN=\${NFQWS_MY1_TCP_PKT_IN:-\$NFQWS_TCP_PKT_IN}
+          NFQWS_MY1_UDP_PKT_IN=\${NFQWS_MY1_UDP_PKT_IN:-\$NFQWS_UDP_PKT_IN}
           
-          NFQWS_MY1_IPSET_SIZE=${NFQWS_MY1_IPSET_SIZE:-8192}
-          NFQWS_MY1_IPSET_OPT="${NFQWS_MY1_IPSET_OPT:-hash:net hashsize 8192 maxelem $NFQWS_MY1_IPSET_SIZE}"
+          NFQWS_MY1_IPSET_SIZE=\${NFQWS_MY1_IPSET_SIZE:-$IPSET_SIZE}
+          NFQWS_MY1_IPSET_OPT="\${NFQWS_MY1_IPSET_OPT:-hash:net hashsize $HASHSIZE maxelem \$NFQWS_MY1_IPSET_SIZE}"
           
           alloc_dnum DNUM_NFQWS_MY1
           alloc_qnum QNUM_NFQWS_MY1
@@ -181,12 +197,13 @@ jobs:
           }
           EOF
           
-          sed -i "s|IPV4_PLACEHOLDER|$IPV4_LIST|g" 50-nfqws-ipset
-          sed -i "s|IPV6_PLACEHOLDER|$IPV6_LIST|g" 50-nfqws-ipset
-          
           echo "Generated 50-nfqws-ipset with:"
-          echo "  IPv4 networks: $(echo $IPV4_LIST | wc -w)"
-          echo "  IPv6 networks: $(echo $IPV6_LIST | wc -w)"
+          echo "  IPv4 networks: $IPV4_COUNT"
+          echo "  IPv6 networks: $IPV6_COUNT"
+          echo "  Total networks: $TOTAL_COUNT"
+          echo "  Calculated IPSET_SIZE: $IPSET_SIZE"
+          echo "  Calculated HASHSIZE: $HASHSIZE"
+          echo "  Estimated memory usage: ~$((TOTAL_COUNT * 35 / 1024)) KB (data) + ~$((HASHSIZE * 8 / 1024)) KB (hash) = ~$(((TOTAL_COUNT * 35 + HASHSIZE * 8) / 1024)) KB total"
       - name: Show generated file stats
         run: |
           for f in ipset-*.txt 50-nfqws-ipset; do
