@@ -1,5 +1,77 @@
-import requests
+import socket
 import ipaddress
+import requests
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+TEST_URLS = [
+    "https://cdn.cookielaw.org/scripttemplates/202501.2.0/otBannerSdk.js",
+    "https://genshin.jmp.blue/characters/all",
+    "https://api.frankfurter.dev/v1/2000-01-01..2002-12-31",
+    "https://genderize.io/",
+    "https://j.dejure.org/jcg/doctrine/doctrine_banner.webp",
+    "https://tcp1620-01.dubybot.live/1MB.bin",
+    "https://tcp1620-02.dubybot.live/1MB.bin",
+    "https://tcp1620-05.dubybot.live/1MB.bin",
+    "https://tcp1620-06.dubybot.live/1MB.bin",
+    "https://eu.api.ovh.com/console/rapidoc-min.js",
+    "https://ovh.sfx.ovh/10M.bin",
+    "https://oracle.sfx.ovh/10M.bin",
+    "https://tms.delta.com/delta/dl_anderson/Bootstrap.js",
+    "https://corp.kaltura.com/wp-content/cache/min/1/wp-content/themes/airfleet/dist/styles/theme.css",
+    "https://api.usercentrics.eu/gvl/v3/en.json",
+    "https://openoffice.apache.org/images/blog/rejected.png",
+    "https://www.juniper.net/etc.clientlibs/juniper/clientlibs/clientlib-site/resources/fonts/lato/Lato-Regular.woff2",
+    "https://www.lg.com/lg5-common-gp/library/jquery.min.js",
+    "https://media-assets.stryker.com/is/image/stryker/gateway_1920?$max_width_1410$",
+    "https://cdn.eso.org/images/banner1920/eso2520a.jpg",
+    "https://cloudlets.io/wp-content/themes/Avada/includes/lib/assets/fonts/fontawesome/webfonts/fa-solid-900.woff2",
+    "https://renklisigorta.com.tr/teklif-al",
+    "https://cdn.xuansiwei.com/common/lib/font-awesome/4.7.0/fontawesome-webfont.woff2"
+]
+
+def get_domain(url):
+    return urlparse(url).netloc
+
+def resolve_domain(domain):
+    ips = set()
+    try:
+        result = socket.getaddrinfo(domain, None)
+        for item in result:
+            ips.add(item[4][0])
+    except:
+        pass
+    return ips
+
+def get_asn(ip):
+    try:
+        url = f"https://stat.ripe.net/data/prefix-overview/data.json?resource={ip}"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        asns = data.get('data', {}).get('asns', [])
+        if asns:
+            return asns[0].get('asn')
+        return None
+    except:
+        return None
+
+def get_subnet(ip, asn):
+    try:
+        url = f"https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        prefixes = [p['prefix'] for p in data.get('data', {}).get('prefixes', [])]
+        
+        ip_obj = ipaddress.ip_address(ip)
+        for prefix in prefixes:
+            net = ipaddress.ip_network(prefix, strict=False)
+            if ip_obj in net:
+                return prefix
+        return None
+    except:
+        return None
 
 def aggregate_cidrs(ip_list):
     if not ip_list:
@@ -8,144 +80,33 @@ def aggregate_cidrs(ip_list):
     collapsed = list(ipaddress.collapse_addresses(networks))
     return [str(net) for net in collapsed]
 
-def get_prefixes_from_asn(asn):
-    url = f"https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}"
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return [p['prefix'] for p in data.get('data', {}).get('prefixes', [])]
+domains = set()
+for url in TEST_URLS:
+    domains.add(get_domain(url))
 
-def get_oracle():
-    r = requests.get("https://docs.oracle.com/iaas/tools/public_ip_ranges.json", timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    ips = []
-    for region in data.get('regions', []):
-        for cidr in region.get('cidrs', []):
-            ips.append(cidr['cidr'])
-    return ips
+all_ips = set()
+with ThreadPoolExecutor(max_workers=10) as executor:
+    futures = {executor.submit(resolve_domain, domain): domain for domain in domains}
+    for future in as_completed(futures):
+        all_ips.update(future.result())
 
-def get_aws():
-    r = requests.get("https://ip-ranges.amazonaws.com/ip-ranges.json", timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    ipv4 = [p['ip_prefix'] for p in data.get('prefixes', [])]
-    ipv6 = [p['ipv6_prefix'] for p in data.get('ipv6_prefixes', [])]
-    return ipv4 + ipv6
-
-def get_google_cloud():
-    r = requests.get("https://www.gstatic.com/ipranges/cloud.json", timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    ips = []
-    for prefix in data.get('prefixes', []):
-        if 'ipv4Prefix' in prefix:
-            ips.append(prefix['ipv4Prefix'])
-        if 'ipv6Prefix' in prefix:
-            ips.append(prefix['ipv6Prefix'])
-    return ips
-
-def get_cloudflare():
-    ipv4 = requests.get('https://www.cloudflare.com/ips-v4', timeout=30).text.strip().split('\n')
-    ipv6 = requests.get('https://www.cloudflare.com/ips-v6', timeout=30).text.strip().split('\n')
-    return [ip.strip() for ip in ipv4 + ipv6 if ip.strip()]
-
-def validate_ip(ip_str):
-    try:
-        ipaddress.ip_network(ip_str, strict=False)
-        return True
-    except:
-        return False
-
-asn_providers = {
-    'scaleway': [12876, 29447, 54265, 202023],
-    'hetzner': [24940, 213230, 212317],
-    'akamai': [20940, 16625, 18680, 18717, 20189, 21342, 21357, 23454, 23903, 24319],
-    'digitalocean': [14061, 46652, 62567, 135340, 393406, 394362],
-    'cdn77': [60068],
-    'contabo': [51167],
-    'ovh': [16276],
-    'constant_vultr': [20473],
-    'fastly': [54113],
-}
-
-ipv4 = []
-ipv6 = []
-
-for name, asn_list in asn_providers.items():
-    for asn in asn_list:
-        try:
-            prefixes = get_prefixes_from_asn(asn)
-            print(f"{name} AS{asn}: {len(prefixes)} ranges")
-            for p in prefixes:
-                if not validate_ip(p):
-                    continue
-                if ':' in p:
-                    ipv6.append(p)
-                else:
-                    ipv4.append(p)
-        except Exception as e:
-            print(f"Error {name} AS{asn}: {e}")
-
-try:
-    cloudflare = get_cloudflare()
-    print(f"cloudflare (official): {len(cloudflare)} ranges")
-    for p in cloudflare:
-        if not validate_ip(p):
-            continue
-        if ':' in p:
-            ipv6.append(p)
+subnets = set()
+for ip in all_ips:
+    asn = get_asn(ip)
+    if asn:
+        subnet = get_subnet(ip, asn)
+        if subnet:
+            subnets.add(subnet)
         else:
-            ipv4.append(p)
-except Exception as e:
-    print(f"Error cloudflare: {e}")
+            subnets.add(f"{ip}/{'128' if ':' in ip else '32'}")
+    else:
+        subnets.add(f"{ip}/{'128' if ':' in ip else '32'}")
 
-try:
-    google = get_google_cloud()
-    print(f"google (official): {len(google)} ranges")
-    for p in google:
-        if not validate_ip(p):
-            continue
-        if ':' in p:
-            ipv6.append(p)
-        else:
-            ipv4.append(p)
-except Exception as e:
-    print(f"Error google: {e}")
-
-try:
-    aws = get_aws()
-    print(f"aws: {len(aws)} ranges")
-    for p in aws:
-        if not validate_ip(p):
-            continue
-        if ':' in p:
-            ipv6.append(p)
-        else:
-            ipv4.append(p)
-except Exception as e:
-    print(f"Error aws: {e}")
-
-try:
-    oracle = get_oracle()
-    print(f"oracle: {len(oracle)} ranges")
-    for p in oracle:
-        if not validate_ip(p):
-            continue
-        if ':' in p:
-            ipv6.append(p)
-        else:
-            ipv4.append(p)
-except Exception as e:
-    print(f"Error oracle: {e}")
-
-print(f"\nBefore aggregation: IPv4: {len(ipv4)}, IPv6: {len(ipv6)}")
+ipv4 = [s for s in subnets if ':' not in s]
+ipv6 = [s for s in subnets if ':' in s]
 
 ipv4_aggregated = aggregate_cidrs(ipv4)
 ipv6_aggregated = aggregate_cidrs(ipv6)
-
-print(f"After aggregation: IPv4: {len(ipv4_aggregated)}, IPv6: {len(ipv6_aggregated)}")
-print(f"Reduction: IPv4: {len(ipv4) - len(ipv4_aggregated)} ({100*(len(ipv4)-len(ipv4_aggregated))/len(ipv4):.1f}%), IPv6: {len(ipv6) - len(ipv6_aggregated)} ({100*(len(ipv6)-len(ipv6_aggregated))/len(ipv6):.1f}%)")
 
 with open('ipset-all-ipv4.txt', 'w') as f:
     f.write('\n'.join(sorted(ipv4_aggregated, key=lambda x: ipaddress.ip_network(x))))
@@ -154,10 +115,6 @@ with open('ipset-all-ipv6.txt', 'w') as f:
     f.write('\n'.join(sorted(ipv6_aggregated, key=lambda x: ipaddress.ip_network(x))))
 
 with open('ipset-all.txt', 'w') as f:
-    all_sorted = sorted(ipv4_aggregated + ipv6_aggregated, key=lambda x: (1 if ':' in x else 0, ipaddress.ip_network(x)))
+    all_sorted = sorted(ipv4_aggregated + ipv6_aggregated, 
+                       key=lambda x: (1 if ':' in x else 0, ipaddress.ip_network(x)))
     f.write('\n'.join(all_sorted))
-
-print(f"\nFiles created:")
-print(f"  ipset-all-ipv4.txt: {len(ipv4_aggregated)} ranges")
-print(f"  ipset-all-ipv6.txt: {len(ipv6_aggregated)} ranges")
-print(f"  ipset-all.txt: {len(ipv4_aggregated) + len(ipv6_aggregated)} ranges")
